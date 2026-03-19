@@ -1,0 +1,15 @@
+{
+  "conversion_date": "2025-10-03T17:25:41.234159",
+  "models": {
+    "slope_mapping": "models/mapping_rules/slope_location_mapping.json",
+    "srr_rules": "models/config/srr_rules.json",
+    "keyword_rules": "models/config/keyword_rules.json"
+  },
+  "original_data": {
+    "srr_data": "data/depend_data/SRR data 2021-2024.csv",
+    "slope_data": "data/depend_data/Slope data.xlsx",
+    "complaints_data": "data/depend_data/Slopes Complaints & Enquires Under TC K928 4-10-2021.xlsx",
+    "rules_doc": "data/depend_data/SRR rules.docx"
+  },
+  "status": "converted"
+}

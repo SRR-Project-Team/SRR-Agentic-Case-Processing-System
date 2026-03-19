@@ -1,0 +1,140 @@
+# SRR Case Processing System - GitIgnore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.cursor/
+.vscode/
+.idea/
+.trae/
+.claude/
+*.swp
+*.swo
+*~
+
+.dockerignore
+.gcloudignore
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+# package-lock.json
+.npm
+
+# Environment files
+backend/.env
+backend/.env.yaml
+backend/.env.yaml.local
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Frontend build artifacts
+frontend/srr-chatbot/build/
+
+# Logs
+*.log
+logs/
+
+# Git backup
+.git_backup/
+
+# Database
+*.db
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+temp/
+tmp/
+
+# AI Models Cache
+# models/
+# *.pkl
+# *.model
+
+# OCR Cache
+# ocr_cache/
+
+# Test files
+test_*.py
+*_test.py
+test_*.html
+smoke/
+scripts/
+
+# Example input files (contain sensitive data)
+exampleInput/
+example_*
+
+# API Keys and Secrets
+api_keys.txt
+*.key
+*.pem
+*.crt
+*.p12
+github-actions-key.json
+
+# Excel temp files
+~$*.xlsx
+~$*.xls
+
+# PDF temp files
+*.pdf.tmp
+
+# Runtime data (should not be in repo)
+backend/data/pdf_cache/
+backend/data/surrealdb/
+backend/data/rag_files/
+
+# Runtime files
+*.pid
+
+srr-pipeline-9e8f7f130f95.json
+
+# Documentation
+docs/DEPLOYMENT_CHECKLIST.md
+docs/OPT/

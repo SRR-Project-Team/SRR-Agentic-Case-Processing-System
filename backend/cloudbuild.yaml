@@ -1,0 +1,16 @@
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', '${_IMAGE_TAG}', '-t', '${_IMAGE_NAME}:latest', '-f', 'backend/Dockerfile', 'backend']
+    env:
+      - 'GOOGLE_ENTRYPOINT=gunicorn src.api.main:app --bind 0.0.0.0:${PORT:-8080} --workers 2 --worker-class uvicorn.workers.UvicornWorker'
+
+images:
+  - '${_IMAGE_TAG}'
+  - '${_IMAGE_NAME}:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  env:
+    - 'GOOGLE_ENTRYPOINT=gunicorn src.api.main:app --bind 0.0.0.0:${PORT:-8080} --workers 2 --worker-class uvicorn.workers.UvicornWorker'
+

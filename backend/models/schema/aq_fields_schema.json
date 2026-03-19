@@ -1,0 +1,124 @@
+{
+  "A_date_received": {
+    "type": "date",
+    "format": "dd-MMM-yyyy",
+    "required": true,
+    "source_hint": "II. ASSIGNMENT HISTORY table, row where Status=Open AND Dept=ASD",
+    "fallback": ""
+  },
+  "B_source": {
+    "type": "string",
+    "required": true,
+    "source_hint": "ICC for TXT, TMO for TMO PDF, RCC for RCC PDF",
+    "fallback": "ICC"
+  },
+  "C_case_number": {
+    "type": "string",
+    "required": true,
+    "source_hint": "1823 Case: 3-XXXXXXXXXX, or TMO Ref., or RCC#",
+    "fallback": ""
+  },
+  "D_type": {
+    "type": "enum",
+    "values": ["Emergency", "Urgent", "General"],
+    "required": true,
+    "source_hint": "Specific Q&A or Description; Emergency=immediate danger, Urgent=potential risk, General=no risk",
+    "fallback": "General"
+  },
+  "E_caller_name": {
+    "type": "string",
+    "required": true,
+    "source_hint": "VI. CONTACT INFORMATION Last Name; NA if anonymous",
+    "fallback": ""
+  },
+  "F_contact_no": {
+    "type": "string",
+    "required": true,
+    "source_hint": "VI. CONTACT INFORMATION Mobile/Email; NA if anonymous",
+    "fallback": ""
+  },
+  "G_slope_no": {
+    "type": "string",
+    "pattern": "^\\d{1,2}[A-Za-z]{2,3}[-/][A-Za-z0-9/()\\-]+$",
+    "required": true,
+    "source_hint": "Slope number from content or location plan",
+    "fallback": ""
+  },
+  "H_location": {
+    "type": "string",
+    "required": true,
+    "source_hint": "From slope_no lookup or content",
+    "fallback": ""
+  },
+  "I_nature_of_request": {
+    "type": "string",
+    "required": true,
+    "source_hint": "Request nature summary from content",
+    "fallback": ""
+  },
+  "J_subject_matter": {
+    "type": "string",
+    "required": true,
+    "source_hint": "Subject Matter field or infer from content; Hazardous Tree, Tree Trimming, Fallen Tree, Grass Cutting, Surface Erosion, Others",
+    "fallback": "Others"
+  },
+  "K_10day_rule_due_date": {
+    "type": "date",
+    "format": "dd-MMM-yyyy",
+    "required": false,
+    "source_hint": "A+10 days",
+    "fallback": ""
+  },
+  "L_icc_interim_due": {
+    "type": "date",
+    "format": "dd-MMM-yyyy",
+    "required": false,
+    "source_hint": "I. DUE DATE section [Interim Reply]",
+    "fallback": ""
+  },
+  "M_icc_final_due": {
+    "type": "date",
+    "format": "dd-MMM-yyyy",
+    "required": false,
+    "source_hint": "I. DUE DATE section [Final Reply]",
+    "fallback": ""
+  },
+  "N_works_completion_due": {
+    "type": "date",
+    "format": "dd-MMM-yyyy",
+    "required": false,
+    "source_hint": "Depends on D_type: Emergency 1d, Urgent 3d, General 12d",
+    "fallback": ""
+  },
+  "O1_fax_to_contractor": {
+    "type": "date",
+    "format": "dd-MMM-yyyy",
+    "required": false,
+    "source_hint": "Usually same as A",
+    "fallback": ""
+  },
+  "O2_email_send_time": {
+    "type": "string",
+    "required": false,
+    "source_hint": "Transaction Time or Case Creation Date time",
+    "fallback": ""
+  },
+  "P_fax_pages": {
+    "type": "string",
+    "required": false,
+    "source_hint": "File upload count",
+    "fallback": ""
+  },
+  "Q_case_details": {
+    "type": "string",
+    "required": false,
+    "source_hint": "Case details with suggested deadlines",
+    "fallback": ""
+  },
+  "R_AI_Summary": {
+    "type": "string",
+    "required": false,
+    "source_hint": "Max 150 words summary",
+    "fallback": ""
+  }
+}

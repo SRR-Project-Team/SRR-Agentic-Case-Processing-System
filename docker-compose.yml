@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: gcr.io/srr-pipeline/srr-backend:latest  
+    container_name: srr-backend
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - CORS_ALLOWED_ORIGINS=https://srr-demo.web.app,https://srr-demo.firebaseapp.com,http://localhost:3000
+      # Docker 特定的配置覆盖
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/srr-pipeline-9e8f7f130f95.json
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - HTTPS_PROXY=http://host.docker.internal:7890
+    env_file:
+      - ./backend/.env  # 載入 API keys 等敏感配置
+    volumes:
+      - ./backend/data:/app/data:ro
+      - ./backend/srr-pipeline-9e8f7f130f95.json:/app/srr-pipeline-9e8f7f130f95.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

@@ -1,0 +1,20 @@
+{
+  "hosting": {
+    "site": "srr-demo",
+    "public": "srr-chatbot/build",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "predeploy": [
+      "npm --prefix srr-chatbot run build"
+    ]
+  }
+}
