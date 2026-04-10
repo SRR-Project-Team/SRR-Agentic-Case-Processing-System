@@ -122,7 +122,7 @@ See [`docs/CLOUD_RUN_DEPLOYMENT.md`](docs/CLOUD_RUN_DEPLOYMENT.md) for full setu
 
 ```bash
 # 1. Start PostgreSQL (Cloud SQL Proxy or local)
-./cloud-sql-proxy srr-pipeline:us-central1:srr-project-db &
+./cloud-sql-proxy-legacy -instances=srr-pipeline:us-central1:srr-project-db=tcp:5433 &
 
 # 2. Backend
 cd backend
