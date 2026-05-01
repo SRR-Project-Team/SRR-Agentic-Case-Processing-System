@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.abilities.base import register_ability
 from agent.task_state import TaskState
+from utils.deadline_rules import inclusive_calendar_day_offset
 
 _DATE_FORMATS = [
     "%d-%b-%Y",
@@ -66,11 +67,11 @@ class CalculateDeadlinesAbility:
             return state
 
         if not fields.get("K_10day_rule_due_date"):
-            fields["K_10day_rule_due_date"] = _add_days(a_date, 10)
+            fields["K_10day_rule_due_date"] = _add_days(a_date, inclusive_calendar_day_offset(10))
 
         if source == "ICC":
             if not fields.get("L_icc_interim_due"):
-                fields["L_icc_interim_due"] = _add_days(a_date, 10)
+                fields["L_icc_interim_due"] = _add_days(a_date, inclusive_calendar_day_offset(10))
             if not fields.get("M_icc_final_due"):
                 fields["M_icc_final_due"] = _add_days(a_date, 21)
         elif source == "TMO":

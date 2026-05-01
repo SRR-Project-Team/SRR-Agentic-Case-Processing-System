@@ -34,6 +34,7 @@ import './ChatbotInterface.css';
 
 const INPUT_HISTORY_KEY = 'chat_input_history';
 const INPUT_HISTORY_MAX = 10;
+const EMPTY_RESPONSE_HINT = 'No answer text was returned. Possible causes: upstream LLM timeout/network issue. Please retry or check backend logs.';
 
 const EXTRACTED_KEYS: (keyof ExtractedData)[] = [
   'A_date_received', 'B_source', 'C_case_number', 'D_type', 'E_caller_name',
@@ -456,7 +457,7 @@ const ChatbotInterface: React.FC = () => {
       : baseFileInfo;
     const displayText = (baseFileInfo?.type === 'summary' && (baseFileInfo?.summary?.summary != null))
       ? `🤖 AI Summary:\n\n"${baseFileInfo.summary.summary}"`
-      : (finalText || 'No response received.');
+      : (finalText || EMPTY_RESPONSE_HINT);
     setStreamingContent(null);
     setStreamEnded(false);
     pendingFinalTextRef.current = null;
@@ -1386,11 +1387,11 @@ const ChatbotInterface: React.FC = () => {
         }
         setStreamingContent(null);
         setIsProcessing(false);
-        saveMessageToSession(sessionIdAtStart, { message_type: 'bot', content: fullText || 'No response received.' }).catch(() => {});
+        saveMessageToSession(sessionIdAtStart, { message_type: 'bot', content: fullText || EMPTY_RESPONSE_HINT }).catch(() => {});
         return;
       }
       // Ensure streaming state has the full text before ending, so effect uses correct length and no race with batched chunk updates
-      const finalTextForQuery = fullText || 'No response received.';
+      const finalTextForQuery = fullText || EMPTY_RESPONSE_HINT;
       setIsProcessing(false);
       pendingFinalTextRef.current = finalTextForQuery;
       streamingSessionIdRef.current = sessionIdAtStart;

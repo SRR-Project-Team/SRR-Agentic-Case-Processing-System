@@ -71,7 +71,7 @@ class SmartFilePairing:
         # 分类files
         txt_files = [f for f in self.files if not f.is_email and f.filename.lower().endswith('.txt')]
         email_files = [f for f in self.files if f.is_email]
-        pdf_files = [f for f in self.files if f.filename.lower().endswith('.pdf') and (f.filename.upper().startswith('ASD') or f.filename.upper().startswith('RCC'))]
+        pdf_files = [f for f in self.files if f.filename.lower().endswith('.pdf') and ('ASD' in f.filename.upper() or f.filename.upper().startswith('RCC'))]
         skip_files = [f for f in self.files if f not in txt_files and f not in email_files and f not in pdf_files]
 
         

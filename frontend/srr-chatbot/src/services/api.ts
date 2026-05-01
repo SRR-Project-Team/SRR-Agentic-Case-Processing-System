@@ -177,6 +177,20 @@ const fetchWithAuth = async (input: RequestInfo | URL, init: RequestInit = {}): 
   return response;
 };
 
+const toFriendlyStreamError = (error: unknown): Error => {
+  const raw = error instanceof Error ? error.message : String(error || 'Unknown error');
+  const lower = raw.toLowerCase();
+  if (lower.includes('failed to fetch') || lower.includes('networkerror') || lower.includes('load failed')) {
+    return new Error(
+      'Network request failed: backend is unreachable or network is blocked. Please check server status and connectivity.'
+    );
+  }
+  if (lower.includes('aborterror')) {
+    return new Error('Request was interrupted before completion. Please retry.');
+  }
+  return new Error(raw);
+};
+
 const toHex = (buffer: ArrayBuffer): string =>
   Array.from(new Uint8Array(buffer))
     .map((b) => b.toString(16).padStart(2, '0'))
@@ -682,15 +696,34 @@ export const queryCaseStream = async (
   if (embedding_provider != null) body.embedding_provider = embedding_provider;
   if (embedding_model != null) body.embedding_model = embedding_model;
 
-  const res = await fetchWithAuth(`${API_BASE_URL}/api/chat/stream`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetchWithAuth(`${API_BASE_URL}/api/chat/stream`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    throw toFriendlyStreamError(error);
+  }
 
   if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(errBody || `Request failed: ${res.status}`);
+    let errBody = '';
+    try {
+      errBody = await res.text();
+    } catch {
+      errBody = '';
+    }
+    let detail = errBody.trim();
+    if (detail.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(detail);
+        detail = parsed?.message || parsed?.detail || parsed?.error || detail;
+      } catch {
+        // keep raw text
+      }
+    }
+    throw new Error(detail || `Request failed: ${res.status}`);
   }
 
   const reader = res.body?.getReader();
@@ -699,6 +732,9 @@ export const queryCaseStream = async (
   const decoder = new TextDecoder();
   let buffer = '';
   let fullText = '';
+  let gotAnySseLine = false;
+  let gotAnyPayload = false;
+  let gotAnyTextPayload = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -708,10 +744,12 @@ export const queryCaseStream = async (
     buffer = lines.pop() ?? '';
     for (const line of lines) {
       if (line.startsWith('data: ')) {
+        gotAnySseLine = true;
         const payload = line.slice(6);
         if (payload === '[DONE]') continue;
         try {
           const data = JSON.parse(payload);
+          gotAnyPayload = true;
           if (data.error) throw new Error(data.error);
           if (data.type === 'thinking_step' && data.step) {
             callbackObj.onThinkingStep?.(data.step as ThinkingStepEvent);
@@ -724,6 +762,7 @@ export const queryCaseStream = async (
           }
           if (typeof data.text === 'string') {
             fullText += data.text;
+            gotAnyTextPayload = true;
             callbackObj.onTextChunk?.(data.text);
           }
         } catch (e) {
@@ -735,6 +774,7 @@ export const queryCaseStream = async (
   if (buffer.startsWith('data: ')) {
     try {
       const data = JSON.parse(buffer.slice(6));
+      gotAnyPayload = true;
       if (data.error) throw new Error(data.error);
       if (data.type === 'thinking_step' && data.step) {
         callbackObj.onThinkingStep?.(data.step as ThinkingStepEvent);
@@ -743,10 +783,19 @@ export const queryCaseStream = async (
         callbackObj.onRagEval?.(phase, (data.data ?? {}) as RAGEvalData);
       } else if (typeof data.text === 'string') {
         fullText += data.text;
+        gotAnyTextPayload = true;
         callbackObj.onTextChunk?.(data.text);
       }
     } catch {
       /* ignore trailing parse */
+    }
+  }
+  if (!fullText.trim()) {
+    if (!gotAnySseLine) {
+      throw new Error('No SSE data received from backend. This is usually a network or reverse-proxy connectivity issue.');
+    }
+    if (!gotAnyPayload || !gotAnyTextPayload) {
+      throw new Error('Upstream model returned an empty response. This is often caused by LLM network/connectivity issues or upstream timeout.');
     }
   }
   callbackObj.onDone?.(fullText);

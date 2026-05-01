@@ -66,7 +66,7 @@
     "type": "date",
     "format": "dd-MMM-yyyy",
     "required": false,
-    "source_hint": "A+10 days",
+    "source_hint": "Inclusive 10-day rule (base date counts as day 1, equivalent to A+9 days)",
     "fallback": ""
   },
   "L_icc_interim_due": {

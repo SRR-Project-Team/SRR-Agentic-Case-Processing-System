@@ -12,6 +12,13 @@ from typing import Optional, Dict, Any, Generator, List
 from openai import OpenAI
 import httpx
 
+from services.summary_context import (
+    assemble_summary_context,
+    build_deterministic_summary,
+    render_summary_context,
+    summary_has_role_confusion,
+)
+
 # ============================================================
 # Shared Prompt Constants (used by multiple extraction methods)
 # ============================================================
@@ -33,9 +40,15 @@ Use & for multiple categories."""
 
 # R_AI_Summary requirements
 SUMMARY_REQUIREMENTS = """Generate R_AI_Summary (max 150 words) including:
-1) case type, 2) caller name, 3) caller department, 4) call-in date,
-5) key location, 6) specific incident, 7) departments involved,
-8) whether falls under slope/tree maintenance, 9) duration (open to end/now)."""
+1) case type, 2) caller name, 3) source channel, 4) handling / assigned department if explicit and relevant,
+5) call-in date, 6) key location, 7) specific incident, 8) departments involved,
+9) whether falls under slope/tree maintenance, 10) duration (open to end/now).
+
+Role rules:
+- Source channel, caller identity, and handling / assigned department are distinct concepts.
+- For ICC / 1823 public cases, Assignment History fields such as Dept and Assigned To describe handling / assigned departments only.
+- Never describe an Assignment History department as the caller or caller department.
+- If handling / assigned department is unclear, omit it instead of guessing."""
 
 
 class LLMService:
@@ -169,7 +182,142 @@ class LLMService:
         except Exception as e:
             self.logger.error(f"❌ Ollama client initialization failed: {e}")
             return None
-    
+
+    def _build_raw_summary_prompt(
+        self,
+        text: str,
+        *,
+        negative_example: Optional[str] = None,
+    ) -> str:
+        text_snippet = text[:9000] if len(text) > 9000 else text
+        neg_block = ""
+        if negative_example and negative_example.strip():
+            neg_block = (
+                "\n\nIMPORTANT: Do NOT produce a summary like the following (it was deemed unfaithful):\n"
+                f"{negative_example.strip()[:500]}\n\n"
+                "Produce a different, more faithful summary."
+            )
+        return (
+            "Summarize the following text into a single fluent English sentence (max 150 words). "
+            "The summary must include: "
+            "1) case type, "
+            "2) caller name, "
+            "3) source channel, "
+            "4) handling / assigned department if explicit and relevant, "
+            "5) call-in date, "
+            "6) key location, "
+            "7) number of departments involved (infer if unclear), "
+            "8) whether it falls under the slope and tree maintenance department, "
+            "9) duration: from case open date to end date (or to now if missing). "
+            "Role rules: source channel, caller, and handling / assigned department are distinct concepts. "
+            "For ICC / 1823 public cases, never describe Assignment History departments as the caller or caller department. "
+            "If information is unclear, infer cautiously from context. "
+            f"{neg_block}\n\nHere is the text: {text_snippet}"
+        )
+
+    def _call_openai_text(self, message: str, *, temperature: float = 0.3) -> Optional[str]:
+        if not self.api_key or not self.client:
+            return None
+        if self.provider != "openai":
+            self.logger.warning(f"⚠️ Unsupported provider: {self.provider}. Only 'openai' is supported.")
+            return None
+
+        max_retries = 3
+        retry_delay = 2
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.logger.info(f"🔄 Attempting OpenAI API call (attempt {attempt}/{max_retries})...")
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are an expert case-log extraction assistant. You must interpret structured case context reliably and keep entity roles distinct.",
+                        },
+                        {"role": "user", "content": message},
+                    ],
+                    max_tokens=300,
+                    temperature=temperature,
+                )
+                if response and response.choices and len(response.choices) > 0:
+                    content = response.choices[0].message.content
+                    if content and content.strip():
+                        return content.strip()
+                self.logger.warning("⚠️ API response is empty or invalid")
+                return None
+            except Exception as api_error:
+                error_type = type(api_error).__name__
+                error_msg = str(api_error)
+                is_timeout_error = "timeout" in error_msg.lower() or "APITimeoutError" in error_type
+                is_retryable = is_timeout_error or "rate limit" in error_msg.lower() or "503" in error_msg or "502" in error_msg
+                if is_retryable and attempt < max_retries:
+                    delay = retry_delay * (2 ** (attempt - 1))
+                    self.logger.warning(
+                        f"⚠️ OpenAI API call failed (attempt {attempt}/{max_retries}): {error_type} - {error_msg}. "
+                        f"Retrying in {delay} seconds..."
+                    )
+                    time.sleep(delay)
+                    continue
+                self.logger.error(f"❌ OpenAI API call failed after {attempt} attempt(s): {error_type} - {error_msg}")
+                return None
+        return None
+
+    def build_case_summary(
+        self,
+        case_data: Dict[str, Any],
+        *,
+        raw_text: str = "",
+        candidate_summary: Optional[str] = None,
+        negative_example: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        context = assemble_summary_context(
+            case_data,
+            raw_text=raw_text,
+            candidate_summary=candidate_summary or "",
+        )
+        deterministic_summary = build_deterministic_summary(context)
+        if not self.api_key or not self.client:
+            return {
+                "summary": deterministic_summary,
+                "provenance": "structured_summary_deterministic",
+                "context": context,
+            }
+
+        neg_block = ""
+        if negative_example and negative_example.strip():
+            neg_block = (
+                "\nDo not reproduce this prior unfaithful output:\n"
+                f"{negative_example.strip()[:500]}"
+            )
+        message = (
+            "Write a single fluent English case summary (max 150 words) using only the structured context below. "
+            "Source channel, caller, and handling / assigned department are distinct roles. "
+            "For ICC / 1823 public cases, Dept and Assigned To from Assignment History are handling departments only, never caller or caller department. "
+            "Include handling / assigned department only if explicit and relevant. "
+            "If the candidate summary conflicts with structured context, correct it instead of preserving it. "
+            "If any detail is unclear, omit it rather than guessing."
+            f"{neg_block}\n\nStructured context:\n{render_summary_context(context)}"
+        )
+
+        summary = self._call_openai_text(message, temperature=0.2)
+        if summary_has_role_confusion(summary or "", context):
+            return {
+                "summary": deterministic_summary,
+                "provenance": "structured_summary_guarded",
+                "context": context,
+            }
+        if summary:
+            return {
+                "summary": summary,
+                "provenance": "structured_summary",
+                "context": context,
+            }
+        return {
+            "summary": deterministic_summary,
+            "provenance": "structured_summary_deterministic",
+            "context": context,
+        }
+
     def summarize_text(
         self,
         text: str,
@@ -206,109 +354,11 @@ class LLMService:
                 self.logger.warning("⚠️ Empty or whitespace-only text provided for summarization")
                 return None
 
-            # Build request message (use single line string to avoid whitespace problem)
-            text_snippet = text[:9000] if len(text) > 9000 else text
-            neg_block = ""
-            if negative_example and negative_example.strip():
-                neg_block = (
-                    "\n\nIMPORTANT: Do NOT produce a summary like the following (it was deemed unfaithful):\n"
-                    f"{negative_example.strip()[:500]}\n\n"
-                    "Produce a different, more faithful summary."
-                )
-            message = (
-                "Summarize the following text into a single fluent English sentence (max 150 words). "
-                "The summary must include: "
-                "1) case type, "
-                "2) caller name, "
-                "3) caller department, "
-                "4) call-in date, "
-                "5) key location, "
-                "6) number of departments involved (infer if unclear), "
-                "7) whether it falls under the slope and tree maintenance department, "
-                "8) duration: from case open date to end date (or to now if missing). "
-                "If information is unclear, infer cautiously from context. "
-                f"{neg_block}\n\nHere is the text: {text_snippet}"
-            )
-            
-            # Call API based on provider
-            if self.provider == "openai":
-                # 配置重试参数
-                max_retries = 3
-                retry_delay = 2  # initial delay 2 seconds
-                
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        self.logger.info(f"🔄 Attempting OpenAI API call (attempt {attempt}/{max_retries})...")
-                        
-                        # API call to OpenAI
-                        # Note: The following HTTP headers are automatically set by OpenAI SDK:
-                        # - Authorization: Bearer {api_key} (from client initialization)
-                        # - Content-Type: application/json (automatically set)
-                        # These do not need to be manually specified in the API call.
-                        response = self.client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": "You are an expert case-log extraction assistant. You must interpret messy, noisy text logs and extract structured information reliably."
-                                },
-                                {
-                                    "role": "user",
-                                    "content": message
-                                }
-                            ],
-                            max_tokens=300,
-                            temperature=0.3
-                        )
-                        
-                        # Extract response content
-                        if response and response.choices and len(response.choices) > 0:
-                            content = response.choices[0].message.content
-                            if content and content.strip():
-                                self.logger.info("✅ OpenAI AI summary generated successfully")
-                                return content.strip()
-                        
-                        self.logger.warning("⚠️ API response is empty or invalid")
-                        return None
-                        
-                    except Exception as api_error:
-                        error_type = type(api_error).__name__
-                        error_msg = str(api_error)
-                        
-                        # check if it is a timeout error or retryable error
-                        is_timeout_error = "timeout" in error_msg.lower() or "APITimeoutError" in error_type
-                        is_retryable = is_timeout_error or "rate limit" in error_msg.lower() or "503" in error_msg or "502" in error_msg
-                        
-                        if is_retryable and attempt < max_retries:
-                            # calculate backoff delay (exponential backoff)
-                            delay = retry_delay * (2 ** (attempt - 1))
-                            self.logger.warning(
-                                f"⚠️ OpenAI API call failed (attempt {attempt}/{max_retries}): {error_type} - {error_msg}. "
-                                f"Retrying in {delay} seconds..."
-                            )
-                            time.sleep(delay)
-                            continue
-                        else:
-                            # non-retryable error or maximum retry attempts reached
-                            self.logger.error(f"❌ OpenAI API call failed after {attempt} attempt(s): {error_type} - {error_msg}")
-                            
-                            # log more detailed error information
-                            import traceback
-                            if is_timeout_error:
-                                self.logger.error(
-                                    "⏱️ Request timed out. This might be due to:\n"
-                                    "  - Slow network connection\n"
-                                    "  - OpenAI API server issues\n"
-                                    "  - Request payload too large\n"
-                                    "Consider reducing the input text length or checking your network connection."
-                                )
-                            self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
-                            
-                            return None
-            else:
-                self.logger.warning(f"⚠️ Unsupported provider: {self.provider}. Only 'openai' is supported.")
-                return None
-            
+            message = self._build_raw_summary_prompt(text, negative_example=negative_example)
+            summary = self._call_openai_text(message, temperature=0.3)
+            if summary:
+                self.logger.info("✅ OpenAI AI summary generated successfully")
+                return summary
             self.logger.warning("⚠️ API response is empty or invalid")
             return None
             
@@ -365,21 +415,7 @@ class LLMService:
                 return
             if text is None or not isinstance(text, str) or not text.strip():
                 return
-            text_snippet = text[:9000] if len(text) > 9000 else text
-            message = (
-                "Summarize the following text into a single fluent English sentence (max 150 words). "
-                "The summary must include: "
-                "1) case type, "
-                "2) caller name, "
-                "3) caller department, "
-                "4) call-in date, "
-                "5) key location, "
-                "6) number of departments involved (infer if unclear), "
-                "7) whether it falls under the slope and tree maintenance department, "
-                "8) duration: from case open date to end date (or to now if missing). "
-                "If information is unclear, infer cautiously from context. "
-                f"Here is the text: {text_snippet}"
-            )
+            message = self._build_raw_summary_prompt(text)
             if self.provider != "openai":
                 return
             self.logger.info("🔄 Calling OpenAI API for summary (stream)...")
@@ -1373,7 +1409,7 @@ O2_email_send_time, P_fax_pages, Q_case_details, R_AI_Summary
     # 二次审核AI Summary
     def _review_sum_(self, input_str: str, correction_dict: Dict[str, Any]) -> str:
         """
-        Use LLM API to correct keywords in the input string using the provided dictionary
+        Review candidate AI summary against structured fields and repair role confusion.
         
         Args:
             input_str: Input string that may contain keywords needing correction
@@ -1383,11 +1419,6 @@ O2_email_send_time, P_fax_pages, Q_case_details, R_AI_Summary
             Corrected string with keywords replaced based on the dictionary, or None on failure
         """
         try:
-            # Check API key and client
-            if not self.api_key or not self.client:
-                self.logger.warning("⚠️ API key not set or client not initialized, cannot use OpenAI API")
-                return None
-            
             # Validate input
             if not isinstance(input_str, str):
                 self.logger.error(f"❌ Invalid input_str type: {type(input_str)}, expected str")
@@ -1400,77 +1431,17 @@ O2_email_send_time, P_fax_pages, Q_case_details, R_AI_Summary
             if not isinstance(correction_dict, dict):
                 self.logger.error(f"❌ Invalid correction_dict type: {type(correction_dict)}, expected dict")
                 return input_str
-            
-            # Convert dict to readable format
-            dict_content = ""
-            for key, value in correction_dict.items():
-                dict_content += f"- {key}: {value}\n"
-            
-            # Build prompt for keyword correction
-            prompt = f"""Correct keywords in the following input string based on the provided dictionary.
-First, read this text and understand the content it describes:
-INPUT STRING: {input_str}
 
-Next, read the dictionary. I will explain the meaning of each key-value pair in it:
-CORRECTION DICTIONARY: {dict_content}
-- A_date_received: Date of Referral
-- B_source: ICC, TMO, RCC (TMO for ASD PDF, RCC for RCC PDF)
-- C_case_number: 1823 Case Number
-- D_type: Emergency/Urgent/General
-- E_caller_name: Caller/Inspection Officer name
-- F_contact_no: Contact Number
-- G_slope_no: Slope Number (e.g., 11SW-D/CR995, NOT with date suffix)
-- H_location: Location/District
-- I_nature_of_request: 2-20 word action phrase "[action] at [slope/treeID]"
-- J_subject_matter: Category from rules below
-- K_10day_rule_due_date: 10-day Rule Due Date
-- L_icc_interim_due: ICC Interim Reply Due Date
-- M_icc_final_due: ICC Final Reply Due Date
-- N_works_completion_due: Works Completion Due Date
-- O1_fax_to_contractor: Fax to Contractor Date
-- O2_email_send_time: Email Send Time
-- P_fax_pages: Fax Pages count
-- Q_case_details: Case Details/Follow-up Actions
-
-INSTRUCTIONS:
-1. Focus on checking whether the personal names and place names appearing in the string (str) are inconsistent with those recorded in the dictionary. 
-If there is any inconsistency, the dictionary shall prevail, and the addresses appearing in the string shall be revised accordingly.
-2. Maintain the original structure and meaning of the string
-3. Only change keywords that appear in the dictionary
-4. Return the corrected string in the same language as the input
-
-OUTPUT: 
-Return only the corrected string, no explanations."""
-
-            self.logger.info("🔄 Calling OpenAI API for keyword correction...")
-            
-            # Call OpenAI API
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a keyword correction assistant. You help correct keywords in text using provided dictionary mappings."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                max_tokens=2000,
-                temperature=0.1  # Low temperature for accurate corrections
+            summary_payload = self.build_case_summary(
+                correction_dict,
+                candidate_summary=input_str,
             )
-            
-            # Extract response content
-            if response and response.choices and len(response.choices) > 0:
-                content = response.choices[0].message.content
-                if content and content.strip():
-                    corrected_str = content.strip()
-                    self.logger.info(f"✅ Keyword correction completed successfully")
-                    return corrected_str
-            
-            self.logger.warning("⚠️ OpenAI API response is empty or invalid")
-            return input_str
+            reviewed = summary_payload.get("summary") or input_str
+            context = summary_payload.get("context") or {}
+            if summary_has_role_confusion(reviewed, context):
+                reviewed = build_deterministic_summary(context)
+            self.logger.info("✅ Summary review completed successfully")
+            return reviewed
             
         except Exception as e:
             error_type = type(e).__name__

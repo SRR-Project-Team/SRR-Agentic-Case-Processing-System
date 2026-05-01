@@ -38,6 +38,7 @@ from utils.file_utils import detect_file_encoding, read_file_with_encoding
 from utils.slope_location_mapper import get_location_from_slope_no
 from utils.source_classifier import classify_source_smart
 from utils.case_type_fallback import infer_d_type_from_content
+from utils.deadline_rules import add_inclusive_calendar_days
 
 
 def parse_date(date_str: str) -> Optional[datetime]:
@@ -127,6 +128,11 @@ def calculate_due_date(base_date: Optional[datetime], days: int) -> str:
     if not base_date:
         return ""
     return format_date(base_date + timedelta(days=days))
+
+
+def calculate_k_due_date(base_date: Optional[datetime]) -> str:
+    """K uses an inclusive 10-day rule, so the base date counts as day 1."""
+    return format_date(add_inclusive_calendar_days(base_date, 10))
 
 
 def extract_1823_case_no(content: str) -> str:
@@ -475,7 +481,7 @@ def extract_case_data_from_txt(
                     # 重新格式化日期
                     result['A_date_received'] = format_date(A_date)
                     # 计算截止日期
-                    result['K_10day_rule_due_date'] = calculate_due_date(A_date, 10)
+                    result['K_10day_rule_due_date'] = calculate_k_due_date(A_date)
                     
                     # N: 工程完成截止日期 (取决于D)
                     days_map = {"Emergency": 1, "Urgent": 3, "General": 12}
@@ -640,11 +646,11 @@ def extract_case_data(content: str, original_content: str = None, email_content:
     # D: 案件class型（传统规则备用）
     result['D_type'] = classify_case_type_traditional(content)
     
-    # K: 10天规则截止日期（A+10天）
-    result['K_10day_rule_due_date'] = calculate_due_date(A_date, 10)
+    # K: 10天规则截止日期（包含当天，等价于A+9天）
+    result['K_10day_rule_due_date'] = calculate_k_due_date(A_date)
     
-    # L: ICC临时回复截止日期（A+10个日历日）
-    result['L_icc_interim_due'] = calculate_due_date(A_date, 10)
+    # L: ICC临时回复截止日期（包含当天，等价于A+9天）
+    result['L_icc_interim_due'] = format_date(add_inclusive_calendar_days(A_date, 10))
     
     # M: ICC最终回复截止日期（A+21个日历日）
     result['M_icc_final_due'] = calculate_due_date(A_date, 21)

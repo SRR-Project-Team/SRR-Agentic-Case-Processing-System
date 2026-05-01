@@ -61,15 +61,15 @@ def parse_case_number(
     if source_hint:
         hint_upper = source_hint.upper()
         if hint_upper in ("ICC", "1823"):
-            num = _try_1823(content)
+            num, _ = _try_1823(content)
             if num:
                 return (num, "ICC")
         elif hint_upper == "TMO":
-            num = _try_tmo(content)
+            num, _ = _try_tmo(content)
             if num:
                 return (num, "TMO")
         elif hint_upper == "RCC":
-            num = _try_rcc(content, file_path)
+            num, _ = _try_rcc(content, file_path)
             if num:
                 return (num, "RCC")
 

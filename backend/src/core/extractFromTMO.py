@@ -38,6 +38,7 @@ from utils.case_number_parser import parse_case_number
 from utils.slope_location_mapper import get_location_from_slope_no
 from utils.source_classifier import classify_source_smart
 from utils.case_type_fallback import infer_d_type_from_content
+from utils.deadline_rules import add_inclusive_calendar_days
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,11 @@ def calculate_due_date(base_date: Optional[datetime], days: int) -> str:
     if not base_date:
         return ""
     return format_date(base_date + timedelta(days=days))
+
+
+def calculate_k_due_date(base_date: Optional[datetime]) -> str:
+    """K uses an inclusive 10-day rule, so the base date counts as day 1."""
+    return format_date(add_inclusive_calendar_days(base_date, 10))
 
 
 def extract_tmo_reference(content: str) -> str:
@@ -563,8 +569,8 @@ def extract_case_data_from_pdf(pdf_path: str) -> Dict[str, Any]:
     
     result['J_subject_matter'] = "Hazardous Tree" if form_type == "hazardous" else "Tree Trimming/ Pruning"
     
-    # K: 10天规则截止日期 (A+10天)
-    result['K_10day_rule_due_date'] = calculate_due_date(A_date, 10)
+    # K: 10天规则截止日期（包含当天，等价于A+9天）
+    result['K_10day_rule_due_date'] = calculate_k_due_date(A_date)
     
     # L: ICC临时回复截止日期 (A+10个日历日)
     result['L_icc_interim_due'] = calculate_due_date(A_date, 10)

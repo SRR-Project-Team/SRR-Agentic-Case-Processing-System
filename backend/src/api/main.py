@@ -179,6 +179,7 @@ from core.output import (  # Output formatting module
 from utils.smart_file_pairing import SmartFilePairing  # Smart file pairing utility
 from utils.file_utils import read_file_with_encoding,extract_text_from_pdf_fast,extract_content_with_multiple_methods
 from utils.input_adapter import parse_uploaded_documents
+from utils.upload_staging import stage_upload_file
 from utils.file_sorter import sort_uploaded_files
 
 # Set database module path
@@ -406,8 +407,8 @@ def determine_file_processing_type(filename: str, content_type: str) -> str:
     if filename.lower().endswith('.txt'):
         return "txt"
     elif filename.lower().endswith('.pdf'):
-        # Determine PDF type based on filename prefix
-        if filename.upper().startswith('ASD'):
+        # Determine PDF type: TMO if filename contains ASD (anywhere); RCC if RCC-prefixed
+        if 'ASD' in filename.upper():
             return "tmo"
         elif filename.upper().startswith('RCC'):
             return "rcc"
@@ -531,24 +532,25 @@ async def process_paired_txt_file(main_file_path: str, email_file_path: str = No
         # Process TXT file separately (will automatically detect email file)
         return extract_case_data_from_txt(main_file_path)
 
-# The summary from field R
-async def AI_summary_by_R(R_content: str, filename: str, case_data: dict) -> Dict[str, Any]:
-    if R_content:
-        llm_service = get_llm_service()
-        reviewed = llm_service._review_sum_(R_content, case_data)
-        summary = reviewed if reviewed else R_content
-        # Guard: if review introduces placeholders (case_data keys left unreplaced), revert to original
-        if case_data:
-            for key in case_data:
-                if key in summary:
-                    summary = R_content
-                    break
-        return {
-            "success": True,
-            "summary": summary,
-            "filename": filename,
-            "source": "AI Summary"
-        }
+async def AI_summary_by_R(
+    R_content: str,
+    filename: str,
+    case_data: dict,
+    raw_content: str = "",
+) -> Dict[str, Any]:
+    llm_service = get_llm_service()
+    summary_payload = llm_service.build_case_summary(
+        case_data or {},
+        raw_text=raw_content or "",
+        candidate_summary=R_content or "",
+    )
+    summary = summary_payload.get("summary") or R_content or ""
+    return {
+        "success": bool(summary),
+        "summary": summary,
+        "filename": filename,
+        "source": summary_payload.get("provenance") or "structured_summary",
+    }
 
 
 def generate_file_summary_stream(file_content: str, filename: str, file_path: str = None):
@@ -632,16 +634,23 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 
 _knowledge_base_service = None
 if FEATURE_DYNAMIC_KB:
-    _knowledge_base_service = KnowledgeBaseService()
-    _vector_store = PgVectorStore()
-    app.include_router(
-        build_knowledge_base_router(
-            kb_service=_knowledge_base_service,
-            vector_store_client=_vector_store,
-            get_current_user_dep=get_current_user,
-            user_role_resolver=_user_role,
+    try:
+        _knowledge_base_service = KnowledgeBaseService()
+        _vector_store = PgVectorStore()
+        app.include_router(
+            build_knowledge_base_router(
+                kb_service=_knowledge_base_service,
+                vector_store_client=_vector_store,
+                get_current_user_dep=get_current_user,
+                user_role_resolver=_user_role,
+            )
         )
-    )
+    except Exception as kb_init_err:
+        logging.getLogger(__name__).warning(
+            "Dynamic knowledge base disabled at startup: %s",
+            kb_init_err,
+        )
+        _knowledge_base_service = None
 
 
 # ============== Authentication Endpoints ==============
@@ -1118,37 +1127,47 @@ async def process_srr_file(
     print(f"🎯 ENDPOINT HIT: /api/process-srr-file", flush=True)
     start_time = time.time()
     file_path = None
+    staged_upload = None
 
     def sse_event(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    if not validate_file_type_extended(file.content_type, file.filename):
+        async def invalid_file_stream():
+            yield sse_event("error", {"error": get_file_type_error_message_extended()})
+
+        return StreamingResponse(
+            invalid_file_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    processing_type = determine_file_processing_type(file.filename, file.content_type)
+    if processing_type == "unknown":
+        async def unsupported_file_stream():
+            yield sse_event(
+                "error",
+                {"error": "Unsupported file type or filename format. Supported: TXT files, or PDF files containing ASD or starting with RCC"},
+            )
+
+        return StreamingResponse(
+            unsupported_file_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    file_path = _build_safe_temp_path(file.filename)
+    staged_upload = await stage_upload_file(file, temp_path=file_path)
 
     async def event_stream():
         nonlocal file_path
         if embedding_provider or embedding_model:
             set_embedding_override(embedding_provider, embedding_model)
         try:
-            print(f"📥 File upload request: {file.filename}")
-            if not validate_file_type_extended(file.content_type, file.filename):
-                yield sse_event("error", {"error": get_file_type_error_message_extended()})
-                return
-            processing_type = determine_file_processing_type(file.filename, file.content_type)
-            if processing_type == "unknown":
-                yield sse_event("error", {"error": "Unsupported file type or filename format. Supported: TXT files, or PDF files starting with ASD/RCC"})
-                return
-
-            file_path = _build_safe_temp_path(file.filename)
-            file_size = 0
-            file_content_bytes = b""
-            with open(file_path, "wb") as buffer:
-                chunk_size = 8192
-                while True:
-                    chunk = await file.read(chunk_size)
-                    if not chunk:
-                        break
-                    buffer.write(chunk)
-                    file_content_bytes += chunk
-                    file_size += len(chunk)
-            print(f"✅ File saved: {file.filename}, {file_size} bytes")
+            print(f"📥 File upload request: {staged_upload.filename}")
+            file_content_bytes = staged_upload.file_bytes
+            file_size = len(file_content_bytes)
+            print(f"✅ File saved: {staged_upload.filename}, {file_size} bytes")
             file_hash = calculate_file_hash(file_content_bytes)
             if force_reprocess:
                 # Force a fresh record for local validation workflows.
@@ -1167,7 +1186,7 @@ async def process_srr_file(
                     "O2_email_send_time", "P_fax_pages", "Q_case_details"
                 )}
                 payload = {
-                    "filename": file.filename,
+                    "filename": staged_upload.filename,
                     "status": "duplicate",
                     "message": f"File already processed for case number: {existing_case.get('C_case_number', 'N/A')}",
                     "structured_data": sd_dict,
@@ -1182,7 +1201,7 @@ async def process_srr_file(
                     None,
                     _run_extraction_and_save,
                     file_path,
-                    file.filename,
+                    staged_upload.filename,
                     processing_type,
                     file_hash,
                     current_user,
@@ -1225,43 +1244,29 @@ async def process_srr_file(
                 except Exception as external_err:
                     print(f"⚠️ External data lookup failed: {external_err}", flush=True)
 
-            summary_result = None
-            if extracted_data.get("R_AI_Summary"):
-                R_AI_Summary_value = extracted_data.pop("R_AI_Summary")
-                summary_result = await AI_summary_by_R(R_AI_Summary_value, file.filename, extracted_data)
-                if summary_result and summary_result.get("summary"):
-                    yield sse_event("summary", {"summary": summary_result["summary"], "success": True})
+            summary_result = await AI_summary_by_R(
+                extracted_data.get("R_AI_Summary", ""),
+                staged_upload.filename,
+                case_data,
+                content or "",
+            )
+            if summary_result and summary_result.get("summary"):
+                yield sse_event(
+                    "summary",
+                    {
+                        "summary": summary_result["summary"],
+                        "success": True,
+                        "source": summary_result.get("source"),
+                    },
+                )
             else:
-                summary_queue = queue.Queue()
-
-                def run_summary_stream():
-                    try:
-                        full = []
-                        for c in generate_file_summary_stream(content, file.filename, file_path):
-                            full.append(c)
-                            summary_queue.put(c)
-                        summary_queue.put(("end", "".join(full)))
-                    except Exception as e:
-                        summary_queue.put(("error", str(e)))
-
-                loop.run_in_executor(None, run_summary_stream)
-                full_summary = ""
-                while True:
-                    item = await loop.run_in_executor(None, summary_queue.get)
-                    if isinstance(item, tuple):
-                        if item[0] == "end":
-                            full_summary = item[1]
-                            break
-                        if item[0] == "error":
-                            yield sse_event("summary_end", {"success": False, "error": item[1]})
-                            summary_result = {"success": False, "error": item[1]}
-                            break
-                    else:
-                        full_summary += item
-                        yield sse_event("summary_chunk", {"text": item})
-                if full_summary and not summary_result:
-                    summary_result = {"success": True, "summary": full_summary}
-                    yield sse_event("summary_end", {"success": True, "summary": full_summary})
+                yield sse_event(
+                    "summary_end",
+                    {
+                        "success": False,
+                        "error": "Unable to generate summary from structured case data.",
+                    },
+                )
 
             similar_cases = []
             try:
@@ -1294,7 +1299,7 @@ async def process_srr_file(
                 db_manager.update_case_metadata(case_id=case_id, ai_summary=ai_summary_text, similar_historical_cases=similar_cases, location_statistics=location_stats)
 
             yield sse_event("similar_cases", {"similar_cases": similar_cases})
-            yield sse_event("done", {"filename": file.filename, "case_id": case_id})
+            yield sse_event("done", {"filename": staged_upload.filename, "case_id": case_id})
         except Exception as e:
             traceback.print_exc()
             yield sse_event("error", {"error": str(e)})
@@ -1328,9 +1333,37 @@ async def create_case_stream(
     """
     start_time = time.time()
     file_path = None
+    staged_upload = None
 
     def sse_event(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    if not validate_file_type_extended(file.content_type, file.filename):
+        async def invalid_file_stream():
+            yield sse_event("error", {"error": get_file_type_error_message_extended()})
+
+        return StreamingResponse(
+            invalid_file_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    processing_type = determine_file_processing_type(file.filename, file.content_type)
+    if processing_type == "unknown":
+        async def unsupported_file_stream():
+            yield sse_event(
+                "error",
+                {"error": "Unsupported file type or filename format. Supported: TXT files, or PDF files containing ASD or starting with RCC"},
+            )
+
+        return StreamingResponse(
+            unsupported_file_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    file_path = _build_safe_temp_path(file.filename)
+    staged_upload = await stage_upload_file(file, temp_path=file_path)
 
     async def event_stream():
         nonlocal file_path
@@ -1338,28 +1371,7 @@ async def create_case_stream(
         if embedding_provider or embedding_model:
             set_embedding_override(embedding_provider, embedding_model)
         try:
-            if not validate_file_type_extended(file.content_type, file.filename):
-                yield sse_event("error", {"error": get_file_type_error_message_extended()})
-                return
-
-            processing_type = determine_file_processing_type(file.filename, file.content_type)
-            if processing_type == "unknown":
-                yield sse_event(
-                    "error",
-                    {"error": "Unsupported file type or filename format. Supported: TXT files, or PDF files starting with ASD/RCC"},
-                )
-                return
-
-            file_path = _build_safe_temp_path(file.filename)
-            file_content_bytes = b""
-            with open(file_path, "wb") as buffer:
-                while True:
-                    chunk = await file.read(8192)
-                    if not chunk:
-                        break
-                    buffer.write(chunk)
-                    file_content_bytes += chunk
-
+            file_content_bytes = staged_upload.file_bytes
             file_hash = calculate_file_hash(file_content_bytes)
             if force_reprocess:
                 # Force a fresh record for local validation workflows.
@@ -1377,7 +1389,7 @@ async def create_case_stream(
                 yield sse_event(
                     "duplicate",
                     {
-                        "filename": file.filename,
+                        "filename": staged_upload.filename,
                         "status": "duplicate",
                         "message": f"File already processed for case number: {existing_case.get('C_case_number', 'N/A')}",
                         "case_id": existing_case["id"],
@@ -1392,7 +1404,7 @@ async def create_case_stream(
                 None,
                 _run_extraction_and_save,
                 file_path,
-                file.filename,
+                staged_upload.filename,
                 processing_type,
                 file_hash,
                 current_user,
@@ -1437,7 +1449,7 @@ async def create_case_stream(
                     fields=dict(fields or {}),
                     raw_content=content or "",
                     file_path=file_path or "",
-                    file_name=file.filename or "",
+                    file_name=staged_upload.filename or "",
                     case_id=case_id,
                 )
                 task_state = await process_case(task_state)
@@ -1490,7 +1502,7 @@ async def create_case_stream(
             yield sse_event(
                 "done",
                 {
-                    "filename": file.filename,
+                    "filename": staged_upload.filename,
                     "case_id": case_id,
                     "fields": fields,
                     "summary": summary_text,
@@ -1591,7 +1603,7 @@ async def create_case_from_folder(
         if processing_type == "unknown":
             return JSONResponse(
                 status_code=400,
-                content={"status": "error", "message": "Core document type not supported (TXT or ASD/RCC PDF)"},
+                content={"status": "error", "message": "Core document type not supported (expected TXT, or PDF containing ASD, or PDF starting with RCC)"},
             )
         file_hash = calculate_file_hash(core_doc.file_bytes)
         existing = db_manager.check_case_duplicate(file_hash)
@@ -1889,9 +1901,10 @@ async def process_multiple_files_stream(files: List[UploadFile] = File(...)):
     def sse_event(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
+    parsed_docs = await parse_uploaded_documents(files)
+
     async def event_stream():
         temp_files = {}
-        parsed_docs = await parse_uploaded_documents(files)
         if not files:
             yield sse_event("batch_done", {
                 "total_files": 0, "processed_cases": 0, "successful": 0, "failed": 0, "skipped": 0,

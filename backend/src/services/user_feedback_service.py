@@ -9,6 +9,7 @@ Part of the three-layer memory strategy (see docs/MEMORY_STRATEGY.md):
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from collections import Counter
 from typing import Any, Dict, List, Optional
@@ -17,6 +18,8 @@ from sqlalchemy import text
 
 from src.core.embedding import embed_text
 from src.core.pg_vector_store import PgVectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class UserFeedbackService:
@@ -30,7 +33,21 @@ class UserFeedbackService:
     DOC_TYPE = "correction"
 
     def __init__(self) -> None:
-        self._store = PgVectorStore()
+        self._store: Optional[PgVectorStore] = None
+        self._store_error: Optional[Exception] = None
+
+    def _get_store(self) -> Optional[PgVectorStore]:
+        if self._store is not None:
+            return self._store
+        if self._store_error is not None:
+            return None
+        try:
+            self._store = PgVectorStore()
+        except Exception as exc:
+            self._store_error = exc
+            logger.warning("UserFeedbackService disabled: vector store unavailable: %s", exc)
+            return None
+        return self._store
 
     def _build_filename(self, payload: Dict[str, Any]) -> str:
         raw = (
@@ -55,10 +72,13 @@ class UserFeedbackService:
         return "\n".join(lines).strip()
 
     async def save_feedback(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        store = self._get_store()
+        if store is None:
+            raise RuntimeError("Feedback storage unavailable")
         content = self._build_content(payload)
         vector = embed_text(content)
         filename = self._build_filename(payload)
-        row_id = await self._store.add_to_collection(
+        row_id = await store.add_to_collection(
             PgVectorStore.COLLECTION_KNOWLEDGE_DOCS,
             {
                 "doc_type": self.DOC_TYPE,
@@ -82,7 +102,10 @@ class UserFeedbackService:
         top_k: int = 5,
         min_similarity: float = 0.25,
     ) -> List[Dict[str, Any]]:
-        rows = await self._store.retrieve_from_collection(
+        store = self._get_store()
+        if store is None:
+            return []
+        rows = await store.retrieve_from_collection(
             PgVectorStore.COLLECTION_KNOWLEDGE_DOCS,
             query=query or "case feedback",
             top_k=top_k,
@@ -118,12 +141,15 @@ class UserFeedbackService:
         min_count: int = 3,
     ) -> List[str]:
         """Return field names that have been corrected frequently (count >= min_count)."""
+        store = self._get_store()
+        if store is None:
+            return []
         try:
             sql = text(
                 "SELECT content FROM knowledge_docs_vectors "
                 "WHERE doc_type = :doc_type AND (COALESCE(approved, TRUE) = TRUE)"
             )
-            with self._store.engine.connect() as conn:
+            with store.engine.connect() as conn:
                 rows = conn.execute(sql, {"doc_type": self.DOC_TYPE}).fetchall()
             counter: Counter[str] = Counter()
             for row in rows:
@@ -134,4 +160,3 @@ class UserFeedbackService:
             return [f for f, c in counter.items() if c >= min_count]
         except Exception:
             return []
-

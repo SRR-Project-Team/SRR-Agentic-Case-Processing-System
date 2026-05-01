@@ -30,7 +30,7 @@ _SLOPE_PATTERN = re.compile(
 )
 _ICC_BLOCK_MARKERS = ("Complaint Details", "1823", "Specific Q&A", "Assignment History")
 _LOCATION_KEYWORDS = ("location", "plan", "map", "位置", "平面图", "地圖")
-_TMO_PREFIX = ("ASD", "TMO")
+_TMO_KEYWORDS = ("ASD", "TMO")
 _RCC_PREFIX = ("RCC",)
 
 
@@ -69,7 +69,7 @@ def _classify_file(filename: str, content_type: str, content_preview: Optional[s
 
     if ext in (".pdf", ".docx"):
         base = os.path.basename(name_lower)
-        if any(base.upper().startswith(p) for p in _TMO_PREFIX):
+        if any(p in base.upper() for p in _TMO_KEYWORDS):
             return "tmo_rcc_form"
         if any(base.upper().startswith(p) for p in _RCC_PREFIX):
             return "tmo_rcc_form"
@@ -93,7 +93,7 @@ def _infer_source_type(filename: str, file_category: FileCategory) -> Optional[S
     if file_category == "tmo_rcc_form":
         if any(name_upper.startswith(p) for p in _RCC_PREFIX):
             return "RCC"
-        if any(name_upper.startswith(p) for p in _TMO_PREFIX):
+        if any(p in name_upper for p in _TMO_KEYWORDS):
             return "TMO"
     return None
 

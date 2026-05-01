@@ -60,7 +60,7 @@ class StructuredCaseData(BaseModel):
     H_location: str = ""                       # H: 位置（根据G从slope data.xlsx获取）
     I_nature_of_request: str = ""              # I: 请求性质（从邮件/PDF生成摘要）
     J_subject_matter: str = ""                 # J: 事项主题（根据历史record和规则classify）
-    K_10day_rule_due_date: str = ""            # K: 10天规则截止日期（A+10天）
+    K_10day_rule_due_date: str = ""            # K: 10天规则截止日期（包含当天，等价于A+9天）
     L_icc_interim_due: str = ""                # L: ICC临时回复截止日期（10日历日内）
     M_icc_final_due: str = ""                  # M: ICC最终回复截止日期（21日历日内）
     N_works_completion_due: str = ""           # N: 工程完成截止日期（取决于D）

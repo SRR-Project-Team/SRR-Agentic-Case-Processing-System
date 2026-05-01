@@ -484,7 +484,7 @@ def extract_case_data_from_pdf_with_llm(pdf_path: str, file_type: str,
                         # 重新格式化日期
                         result['A_date_received'] = format_date_func(A_date)
                         # 计算截止日期
-                        result['K_10day_rule_due_date'] = calculate_due_date_func(A_date, 10)
+                        result['K_10day_rule_due_date'] = calculate_due_date_func(A_date, 9)
                         if file_type != "RCC": result['L_icc_interim_due'] = calculate_due_date_func(A_date, 10)
                         if file_type != "RCC": result['M_icc_final_due'] = calculate_due_date_func(A_date, 21)
                         
