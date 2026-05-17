@@ -352,7 +352,7 @@ def get_rule_validator() -> RuleValidator:
     return _rule_validator
 
 
-def evaluate_with_funnel(
+async def evaluate_with_funnel(
     query: str,
     answer: str,
     contexts: str,
@@ -368,14 +368,14 @@ def evaluate_with_funnel(
         l1_result.eval_method = "keyword_overlap|L1_fail"
         return l1_result
 
-    if l1_score >= 0.5:
-        l1_result.eval_method = "keyword_overlap|L1_pass"
-        return l1_result
-
     l2_pass, violations = _rule_validator.validate(fields)
     if not l2_pass:
         l1_result.quality_score = min(l1_result.quality_score, 0.29)
         l1_result.eval_method = f"keyword_overlap|L2_fail({len(violations)})"
+        return l1_result
+
+    if l1_score >= 0.5:
+        l1_result.eval_method = "keyword_overlap|L1_pass_L2_checked"
         return l1_result
 
     if not ragas_enabled:
@@ -384,14 +384,7 @@ def evaluate_with_funnel(
 
     evaluator = get_evaluator(ragas_enabled=True)
     try:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            l1_result.eval_method = "keyword_overlap|L2_pass_ragas_skipped"
-            return l1_result
-        l3_result = loop.run_until_complete(
-            evaluator.score(query, answer, contexts, retrieval_metrics)
-        )
+        l3_result = await evaluator.score(query, answer, contexts, retrieval_metrics)
         l3_result.eval_method = "ragas|L3"
         return l3_result
     except Exception:

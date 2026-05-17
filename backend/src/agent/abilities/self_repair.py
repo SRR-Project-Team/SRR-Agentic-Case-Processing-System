@@ -9,7 +9,7 @@ from agent.task_state import TaskState
 
 @register_ability
 class SelfRepairAbility:
-    """Attempt targeted repair when quality is in the gray zone (0.3-0.5).
+    """Attempt targeted repair for gray-zone quality or structural rule failures.
 
     Three repair strategies prioritized by failure type:
       coverage_low       -> re-summarize with stricter prompt
@@ -56,19 +56,24 @@ class SelfRepairAbility:
 
     async def execute(self, state: TaskState) -> TaskState:
         score = float(state.quality_score or 0.0)
+        eval_data: Dict[str, Any] = state.external_data.get("quality_eval") or {}
+        eval_method = str(eval_data.get("eval_method", ""))
+        is_rule_failure = "L2_fail" in eval_method
 
-        if score < 0.3 or score >= 0.5:
+        if score >= 0.5 or (score < 0.3 and not is_rule_failure):
             return state
 
         if state.retry_record.get("self_repair", 0) >= 1:
             return state
 
-        eval_data: Dict[str, Any] = state.external_data.get("quality_eval") or {}
         coverage = float(eval_data.get("answer_coverage", 1.0) or 1.0)
         faithfulness = float(eval_data.get("answer_faithfulness", 1.0) or 1.0)
-        strategy = self._select_strategy(
-            state, coverage, faithfulness, bool(state.missing_fields)
-        )
+        if is_rule_failure:
+            strategy = "extraction_incomplete"
+        else:
+            strategy = self._select_strategy(
+                state, coverage, faithfulness, bool(state.missing_fields)
+            )
 
         candidate_plans: List[Dict[str, Any]] = []
         if strategy == "routing_uncertain":

@@ -132,7 +132,12 @@ async def process_case(state: TaskState) -> TaskState:
     else:
         state = await run_ability("generate_summary", state)
     state = await run_ability("eval_quality", state)
-    if 0.3 <= float(state.quality_score or 0.0) < 0.5:
+    eval_method = str(((state.external_data or {}).get("quality_eval") or {}).get("eval_method", ""))
+    should_repair = (
+        0.3 <= float(state.quality_score or 0.0) < 0.5
+        or "L2_fail" in eval_method
+    )
+    if should_repair:
         state = await run_ability("self_repair", state)
 
     return state

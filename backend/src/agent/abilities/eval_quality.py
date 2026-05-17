@@ -39,7 +39,7 @@ class EvaluateQualityAbility:
                 contexts = str(contexts_raw or "")
             retrieval_metrics = payload.get("retrieval_metrics") or []
 
-            result = evaluate_with_funnel(
+            result = await evaluate_with_funnel(
                 query=query,
                 answer=answer,
                 contexts=contexts,
